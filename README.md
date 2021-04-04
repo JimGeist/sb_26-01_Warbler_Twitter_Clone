@@ -1,33 +1,33 @@
-# sb_24-05-20_Authentication_Authorization_Exercise
+# sb_26-01_Warbler_Twitter_Clone
 
 
 ## Assignment Details
-Assignment involved creation and deletion of users in an authenticated system using Python, Flask, SQL Alchemy, and Bcrypt. One the authentication pieces were working, feedback elements were added where the authenticated user had the ability to create, update, and delete feedback that they created. They should not have the ability to see, edit, or delete another user's feedback. Final piece was deletion of a user and all the feedback they created.
+Assignment involved extending functionality in an existing code base of a twitter clone application built with Python, Flask, SQL Alchemy, and Bcrypt. 
 
-Add, update and delete functions are in model.py. No unittests or doctests,
+**Part 1** involved fixing current features such as 
+- implementing logout
+- fixing user profile by adding location, bio, and header image
+- fixing user cards by showing the bio for the user on the followers, following, and list-user pages
+- editing current (logged in) user profile
+- fixing the homepage to show up to 100 recent messages from the people the current (logged in) user is following instead of 100 recent messages from everyone.
 
-Flask toolbar debugging statements were included but are commented out.
-```sh
-# from flask_debugtoolbar import DebugToolbarExtension
-    . . . .
-# debug = DebugToolbarExtension(app)```
-# app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = False
-```
+**Part 2** involved implementing likes of messages. One tweak made is that the a user cannot view another user's liked messages. Ideally, the logged in user should only get to view liked messages of following and follower users.
 
-- The database name is ```flask_feedback_db```  
-- The test database name is ```flask_feedback_test_db```
+**Part 3** involved creation of test cases.
+
+
+- The database name is ```warbler```  
+- The test database name is ```warbler_test```
 
 
 ### ENHANCEMENTS
-- Messages and error handling. 
+- Messages and error handling especially in user profile updates. 
+- The user remains on the page where they liked a message, they are not placed in another part of the application.
 
 
 ### DIFFICULTIES 
-- These assignments would be easier for me if I just dropped error checking. I was making good time until Part 8!
-
-
-@app.before_request
-def add_user_to_g():
-Really? This little block of code executes all the time. Isn't there a better way to do this, ONCE?
+- Some of the queries and the realization that straight SQL code just does not translate into SQL Alchemy -- for example, creating a join between ```follows``` and ```messages``` tables because there is no relationship in the models for such a join.
+- The change user code could get placed into the models instead of keeping it in apps.py. 
+- Understanding where logic should live. How much business logic should exist in a template? For example, preventing a user from liking their own messages was implemented by logic in the ```show.html``` template -- the post form only appears when ```msg.user_id``` is not the same as ```user.id```.
 
 

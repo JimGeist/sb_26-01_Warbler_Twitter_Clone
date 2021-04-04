@@ -5,7 +5,7 @@ from flask_debugtoolbar import DebugToolbarExtension
 from sqlalchemy.exc import IntegrityError
 
 from forms import UserAddForm, UserEditForm, LoginForm, MessageForm
-from models import db, connect_db, User, Message
+from models import db, connect_db, User, Message, Likes, Follows
 
 CURR_USER_KEY = "curr_user"
 
@@ -26,6 +26,25 @@ connect_db(app)
 
 # import pdb
 # pdb.set_trace()
+
+
+##############################################################################
+#
+# Supporting Functions
+
+def get_user_likes(user_id):
+    """ Returns a list of message ids that user_id has liked.
+    """
+
+    # build a list of liked messages
+    db_likes = Likes.query.filter(
+        Likes.user_id == user_id).order_by(Likes.message_id).all()
+    user_likes = []
+    for like in db_likes:
+        user_likes.append(like.message_id)
+
+    return user_likes
+
 
 ##############################################################################
 # User signup/login/logout
@@ -154,16 +173,71 @@ def users_show(user_id):
 
     user = User.query.get_or_404(user_id)
 
-    # snagging messages in order from the database;
-    # user.messages won't be in order by default
-    messages = (Message
-                .query
+    # changed the query to a user join query. Even though all the messages belong to
+    #  user_id in this route, adding the user details about the user to the messages
+    #  means we can use the same (slightly altered) show.html as we do when we show
+    #  all the messages that a user liked.
+
+    messages = (db.session.query(User.username, User.image_url,
+                                 Message.id, Message.text,
+                                 Message.timestamp, Message.user_id)
+                .join(Message)
                 .filter(Message.user_id == user_id)
-                .order_by(Message.timestamp.desc())
-                .limit(100)
                 .all())
-    # print(f"\n\nusers_show: user = {user}, Flush=True)
-    return render_template('users/show.html', user=user, messages=messages)
+
+    # # Legacy query
+    # messages = (Message.query.filter(Message.user_id == user_id).order_by(Message.timestamp.desc())
+    # .limit(100).all())
+
+    liked_msgs = get_user_likes(g.user.id)
+
+    # 'route' helps control where the redirect will take you when you alter a
+    #  like on a message. You should stay on the same page. This gets tricky
+    #  since you can like from 3 different places -- the root page, the user's
+    #  all message page, or the user's like's.
+    return render_template('users/show.html', user=user, messages=messages,
+                           likes=liked_msgs,
+                           route=user_id)
+
+
+@ app.route('/users/<int:user_id>/likes', methods=["GET"])
+def user_likes(user_id):
+    """ Show the user profile page with the messages that user_id has liked. user_id must
+        match the currently logged in user, g.user.id.
+    """
+
+    if g.user:
+        user = User.query.get_or_404(user_id)
+        if (user.id == g.user.id):
+            if (user.username[-1].lower() == "s"):
+                name_possessive = f"{user.username}'"
+            else:
+                name_possessive = f"{user.username}'s"
+
+            liked_msgs = get_user_likes(user_id)
+
+            messages_users = (db.session.query(User.username, User.image_url,
+                                               Message.id, Message.text, Message.timestamp, Message.user_id)
+                              .join(Message)
+                              .filter(Message.id.in_(liked_msgs))
+                              .all())
+
+            # print(f"\n\nusers_show: user = {user}, Flush=True)
+            return render_template('users/show.html', user=user, messages=messages_users,
+                                   list_type=f"{name_possessive} Likes",
+                                   route="MyLikes",
+                                   likes=liked_msgs)
+        else:
+            # for now, block access to another user's likes. I would think that seeing another user's likes
+            #  should be restricted to users that g.user.id is following and users who are following g.user.id.
+            flash(
+                "Access unauthorized - Sorry, but you cannot view the messages another use likes.", "danger")
+            # leave g.user on the other user's 'main' page.
+            return redirect(f"/users/{user_id}")
+
+    else:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
 
 
 @app.route('/users/<int:user_id>/following')
@@ -241,28 +315,24 @@ def profile():
 
         if form.validate_on_submit():
             # user may have changed their username in the form, but the
-            #  password is associated with the unchanged username.
+            #  password is associated with the unchanged username. A good
+            #  amount of this logic should move into models, but it is staying
+            #  here for now.
             db_user = User.authenticate(user_archive["username"],
                                         form.password.data)
             if db_user:
 
                 # db_change_user(g.user.id, user_update, user_archive)
+                # username and email are unique required fields and must be in lowercase.
                 db_user.username = form.username.data.lower().strip()
                 db_user.email = form.email.data.lower().strip()
-                db_user.image_url = form.image_url.data.lower().strip()
-                db_user.header_image_url = form.header_image_url.data.lower().strip()
+                db_user.image_url = form.image_url.data.strip()
+                db_user.header_image_url = form.header_image_url.data.strip()
                 db_user.location = form.location.data.strip()
                 db_user.bio = form.bio.data.strip()
 
                 try:
                     db.session.commit()
-                    # print(
-                    #     f'\n\nprofile: before: username {user_archive["username"]},  email {user_archive["email"]}, image_url {user_archive["image_url"]},  header_image_url {user_archive["header_image_url"]}, location {user_archive["location"]},  bio {user_archive["bio"]}', flush=True)
-                    # print(
-                    #     f'          after: username {db_user.username},  email {db_user.email}, image_url {db_user.image_url},  header_image_url {db_user.header_image_url}, location {db_user.location},  bio {db_user.bio}\n\n', flush=True)
-                    # flash(
-                    #     "Placeholder code.", "success")
-                    # redirect to home page when changes were not possible.
 
                     return redirect(f"/users/{g.user.id}")
 
@@ -365,6 +435,58 @@ def messages_show(message_id):
     return render_template('messages/show.html', message=msg)
 
 
+@ app.route('/messages/<int:message_id>/likes/<user_id>', methods=["POST"])
+def messages_add_del_like(message_id, user_id):
+    """ Like or unlike a message message.
+
+        message_id is added to the user's like messagelist (liked) when it does not
+        exist in user's list of liked message.
+
+        message_id is deleted from the user's like message list (unliked) when it
+        EXISTS in user's list of liked message.
+
+        user_id servers for redirection -- we should stay on the page where the like
+        or unlike occurred. It will either have:
+        - a user id (integer) when the like occurred from a user page (users/{user_id}),
+        - 'All' when the like/unlike occurred from the all messages (home) page (/), or
+        - 'MyLikes' when the like/unlike occurred from the current user's likes page
+          (/users/{user_id}/likes).
+
+    """
+
+    if g.user:
+        msg_check = Message.query.get_or_404(message_id)
+
+        user_likes = get_user_likes(g.user.id)
+
+        if (message_id in user_likes):
+            # message_id in list means we need to remove the like.
+            like_no_mo = Likes.query.filter(
+                Likes.user_id == g.user.id, Likes.message_id == message_id).one_or_none()
+            db.session.delete(like_no_mo)
+
+        else:
+            # message_id NOT in list means we need to add the like.
+            new_like = Likes(message_id=message_id, user_id=g.user.id)
+            db.session.add(new_like)
+
+        db.session.commit()
+
+        # Did the like/unlike happen on the root page or from a user page? Leave the user where
+        #  they were, don't redirect them somewhere else.
+        if user_id.isnumeric():
+            return redirect(f"/users/{user_id}")
+        else:
+            if (user_id == "MyLikes"):
+                return redirect(f"/users/{g.user.id}/likes")
+
+        return redirect("/")
+
+    else:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+
 @ app.route('/messages/<int:message_id>/delete', methods=["POST"])
 def messages_destroy(message_id):
     """Delete a message."""
@@ -389,41 +511,34 @@ def homepage():
     """Show homepage:
 
     - anon users: no messages
-    - logged in: 100 most recent messages of followed_users
+    - logged in: 100 most recent messages of followed_users (user_being_followed_id 
+        in 'follows' table.)
     """
 
     if g.user:
+
+        # build a list of followed users
+        db_following = (Follows.query.filter(
+            Follows.user_following_id == g.user.id).all())
+
+        following = []
+        for following_user in db_following:
+            following.append(following_user.user_being_followed_id)
+
+        # print(f"\n\nhomepage: following: {following}\n\n", flush=True)
+
         messages = (Message
                     .query
+                    .filter(Message.user_id.in_(following))
                     .order_by(Message.timestamp.desc())
                     .limit(100)
                     .all())
 
-        return render_template('home.html', messages=messages)
+        liked_msgs = get_user_likes(g.user.id)
+        return render_template('home.html', messages=messages, likes=liked_msgs)
 
     else:
         return render_template('home-anon.html')
-
-# SELECT   msg.id, msg.text, msg.timestamp, msg.user_id, usr.username
-# FROM     messages AS msg
-# JOIN     follows AS fol ON fol.user_being_followed_id = msg.user_id
-# JOIN     users AS usr ON msg.user_id = usr.id
-# WHERE    user_following_id = 1
-# ORDER BY msg.timestamp desc;
-
-# Follows.session.query.filter(Follows.user_following_id == 90).all
-
-# db.session.query(Message.id, Message.text, Message.timestamp, Message.user_id, User.username)
-# .join(Follows)
-
-
-# SELECT msg.id, msg.text, msg.timestamp, msg.user_id, usr.username
-# FROM   messages AS msg  JOIN   follows AS fol ON fol.user_being_followed_id = msg.user_id
-# JOIN users AS usr ON msg.user_id = usr.id WHERE  user_following_id = 1  ORDER BY msg.timestamp desc;
-
-# SELECT msg.id, msg.text, msg.timestamp, msg.user_id, usr.username FROM   messages AS msg  JOIN   follows AS fol ON fol.user_being_followed_id = msg.user_id  JOIN users AS usr ON msg.user_id = usr.id WHERE  user_following_id = 1  ORDER BY msg.timestamp desc;
-
-# SELECT msg.id, msg.text, msg.timestamp, msg.user_id FROM   messages AS msg  JOIN   follows AS fol ON fol.user_being_followed_id = msg.user_id  WHERE  user_following_id = 1  ORDER BY msg.timestamp desc;
 
 ##############################################################################
 # Turn off all caching in Flask
@@ -431,6 +546,7 @@ def homepage():
 #   handled elsewhere)
 #
 # https://stackoverflow.com/questions/34066804/disabling-caching-in-flask
+
 
 @ app.after_request
 def add_header(req):
