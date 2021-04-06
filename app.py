@@ -134,8 +134,7 @@ def login():
 @app.route('/logout')
 def logout():
     """Handle logout of user."""
-    import pdb
-    pdb.set_trace()
+
     do_logout()
 
     if g.user:
