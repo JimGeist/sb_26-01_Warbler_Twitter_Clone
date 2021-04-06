@@ -5,7 +5,7 @@ from flask_debugtoolbar import DebugToolbarExtension
 from sqlalchemy.exc import IntegrityError
 
 from forms import UserAddForm, UserEditForm, LoginForm, MessageForm
-from models import db, connect_db, User, Message, Likes, Follows
+from models import db, connect_db, User, db_change_user, Message, Likes, Follows
 
 CURR_USER_KEY = "curr_user"
 
@@ -189,7 +189,10 @@ def users_show(user_id):
     # messages = (Message.query.filter(Message.user_id == user_id).order_by(Message.timestamp.desc())
     # .limit(100).all())
 
-    liked_msgs = get_user_likes(g.user.id)
+    if g.user:
+        liked_msgs = get_user_likes(g.user.id)
+    else:
+        liked_msgs = []
 
     # 'route' helps control where the redirect will take you when you alter a
     #  like on a message. You should stay on the same page. This gets tricky
@@ -197,7 +200,7 @@ def users_show(user_id):
     #  all message page, or the user's like's.
     return render_template('users/show.html', user=user, messages=messages,
                            likes=liked_msgs,
-                           route=user_id)
+                           route=user_id, logged_in_user_id=g.user.id)
 
 
 @ app.route('/users/<int:user_id>/likes', methods=["GET"])
@@ -226,7 +229,7 @@ def user_likes(user_id):
             return render_template('users/show.html', user=user, messages=messages_users,
                                    list_type=f"{name_possessive} Likes",
                                    route="MyLikes",
-                                   likes=liked_msgs)
+                                   likes=liked_msgs, logged_in_user_id=g.user.id)
         else:
             # for now, block access to another user's likes. I would think that seeing another user's likes
             #  should be restricted to users that g.user.id is following and users who are following g.user.id.
@@ -321,53 +324,49 @@ def profile():
             db_user = User.authenticate(user_archive["username"],
                                         form.password.data)
             if db_user:
+                
+                user_update = {
+                    "username": form.username.data,
+                    "email": form.email.data,
+                    "image_url": form.image_url.data,
+                    "header_image_url": form.header_image_url.data,
+                    "location": form.location.data,
+                    "bio": form.bio.data
+                }
 
-                # db_change_user(g.user.id, user_update, user_archive)
-                # username and email are unique required fields and must be in lowercase.
-                db_user.username = form.username.data.lower().strip()
-                db_user.email = form.email.data.lower().strip()
-                db_user.image_url = form.image_url.data.strip()
-                db_user.header_image_url = form.header_image_url.data.strip()
-                db_user.location = form.location.data.strip()
-                db_user.bio = form.bio.data.strip()
+                result = db_change_user(db_user, user_update, user_archive)
+                # 
+                # result = {
+                #     "successful": True no errors, False errors,
+                #     "msg": {
+                #         "msg_type": (3-value tuple for form field values. 0 has the error type
+                #           (error-integrity, error-integrity-catchall, error-unexpected), 
+                #           1 has the field name, 2 has the error message),
+                #         "msg_text": text for flash message,
+                #         "class": class for flash message, success or danger
+                #     }
+                # }
 
-                try:
-                    db.session.commit()
-
+                # flash message values will always exist. 
+                flash(result["msg"]["msg_text"], result["msg"]["class"])
+                
+                if (result["successful"]):
                     return redirect(f"/users/{g.user.id}")
-
-                except IntegrityError as err:
-
-                    db.session.rollback()
-
-                    results = {"success": False}
-
-                    error_msg = err.orig.args[0].lower()
-                    tests = [("key (username)", "username"),
-                             ("key (email)", "email")]
-
-                    if ("key (username)" in error_msg):
-                        # Username was NOT change from '' to ''. Username '' already exists
-                        form.username.errors = f"ERROR: Username '{form.username.data}' already exists."
-                        flash(
-                            f"Username was NOT change from '{user_archive['username']}' to '{form.username.data}'. Username '{form.username.data}' already exists.", "danger")
-                    else:
-                        if ("key (email)" in error_msg):
-                            form.email.errors = f"ERROR: Email '{form.email.data}' already exists."
-                            flash(
-                                f"Email was NOT change from '{user_archive['email']}' to '{form.email.data}'. Email '{form.email.data}' already exists.", "danger")
+                else:
+                    # crap. we need to disect the message structure
+                    if (result["msg"]["msg_type"][0] == "error-integrity"): 
+                        # result["msg"]["msg_type"][1] is either username or email for 
+                        #  "error-integrity"
+                        if (result["msg"]["msg_type"][1] == "username"):
+                            form.username.errors = result["msg"]["msg_type"][2]
                         else:
-                            # catch all
-                            flash(
-                                "Username and/or email are not unique. Update did NOT occur.", "danger")
+                            # email error
+                            form.email.errors = result["msg"]["msg_type"][2]
 
-                    return render_template("users/edit.html", form=form, user_id=g.user.id)
+                        return render_template("users/edit.html", form=form, user_id=g.user.id)
 
-                except:
-                    db.session.rollback()
-                    flash(
-                        "An unexpected error occurred. Update(s) did NOT occur.", "danger")
-                    return redirect("/")
+                    else:
+                        return redirect("/")
 
             else:
                 # FUTURE CODE - try a few times before bouncing to home?
@@ -377,8 +376,7 @@ def profile():
                 return redirect("/")
 
         else:
-            return render_template("users/edit.html",
-                                   form=form, user_id=g.user.id)
+            return render_template("users/edit.html", form=form, user_id=g.user.id)
 
     else:
         flash("Access unauthorized.", "danger")

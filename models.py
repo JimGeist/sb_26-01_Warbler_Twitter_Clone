@@ -4,6 +4,7 @@ from datetime import datetime
 
 from flask_bcrypt import Bcrypt
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.exc import IntegrityError
 
 bcrypt = Bcrypt()
 db = SQLAlchemy()
@@ -210,3 +211,95 @@ def connect_db(app):
 
     db.app = app
     db.init_app(app)
+
+
+def db_change_user(user_obj, user_update_in, user_archive):
+    """ Perform the changes to a user. The user_obj is a User model object that 
+        already had the password authenticated for username (note that username
+        CAN change). user_update_in and user_archive are dictionaries that contain
+        the values from the form and values before an update.
+
+    """
+
+    user_update = {}
+    # we are dealing with strings entirely. Strip whitespace. The cleanup is performed
+    #  here so we know it is getting done properly.
+    for key in user_update_in.keys():
+        user_update[key] = user_update_in[key].strip()
+
+    user_obj.image_url = user_update["image_url"]
+    user_obj.header_image_url = user_update["header_image_url"]
+    user_obj.location = user_update["location"]
+    user_obj.bio = user_update["bio"]
+
+    # username and email are unique fields. To aid the uniqueness, username and email
+    #  are chanced to lowercase.
+    # lowercase was also added to login and signup functions.
+    user_obj.username = user_update["username"].lower()
+    user_obj.email = user_update["email"].lower()
+
+    # did the username change? 
+    if (user_update["username"] == user_archive["username"]):
+        msg_username = ""
+    else:
+        msg_username = f" (formerly '{user_archive['username']}')"
+
+    try:
+        db.session.commit()
+
+        result = {
+            "successful": True,
+            "msg": {
+                "msg_type": ("success", "", ""),
+                "msg_text": f"'{user_obj.username}'{msg_username} was updated successfully.",
+                "class": "success"
+            }
+        }
+        # return redirect(f"/users/{g.user.id}")
+
+    except IntegrityError as err:
+        # IngegrityError would occur on either username or email changes.
+        db.session.rollback()
+
+        result = {"successful": False}
+
+        error_msg = err.orig.args[0].lower()
+
+        if ("key (username)" in error_msg):
+            # Username was NOT change from '' to ''. Username '' already exists
+            result["msg"] = {
+                "msg_type": ("error-integrity", "username", f"ERROR: Username '{user_update['username']}' already exists."),
+                "msg_text": f"Username was NOT change from '{user_archive['username']}' to '{user_update['username']}'. Username '{user_update['username']}' already exists.",
+                "class": "danger"
+            }
+
+        else:
+            if ("key (email)" in error_msg):
+                result["msg"] = {
+                    "msg_type": ("error-integrity", "email", f"ERROR: Email '{user_update['email']}' already exists."),
+                    "msg_text": f"Email was NOT change from '{user_archive['email']}' to '{user_update['email']}'. Email '{user_update['email']}' already exists.",
+                    "class": "danger"
+                }
+
+            else:
+                # catch all
+                result["msg"] = {
+                    "msg_type": ("error-integrity-catchall", "", ""),
+                    "msg_text": "Username and/or email are not unique. Update(s) did NOT occur.",
+                    "class": "danger"
+                }
+
+    except:
+        db.session.rollback()
+
+        result = {
+            "successful": False,
+            "msg": {
+                "msg_type": ("error-unexpected", "", ""),
+                "msg_text": "An unexpected error occurred. Update(s) did NOT occur.",
+                "class": "danger"
+            }
+        }
+
+        
+    return result
